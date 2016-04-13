@@ -1,0 +1,14 @@
+{
+  "sort": [
+    {
+      "executedDate": {
+        "order": "desc"
+      }
+    }
+  ],
+  "query": {
+    "term": {
+      "succeeded": false
+    }
+  }
+}

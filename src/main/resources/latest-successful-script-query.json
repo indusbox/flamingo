@@ -1,0 +1,15 @@
+{
+  "sort": [
+    {
+      "executedDate": {
+        "order": "desc"
+      }
+    }
+  ],
+  "query": {
+    "term": {
+      "succeeded": true
+    }
+  },
+  "size": 1
+}

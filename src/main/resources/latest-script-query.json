@@ -1,0 +1,13 @@
+{
+  "sort": [
+    {
+      "executedDate": {
+        "order": "desc"
+      }
+    }
+  ],
+  "query": {
+    "match_all": {}
+  },
+  "size": 1
+}
