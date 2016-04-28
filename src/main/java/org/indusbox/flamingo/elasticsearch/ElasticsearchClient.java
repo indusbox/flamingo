@@ -1,4 +1,4 @@
-package org.indusbox.flamingo;
+package org.indusbox.flamingo.elasticsearch;
 
 import java.io.File;
 import java.io.IOException;
@@ -36,6 +36,7 @@ import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
 
 import com.google.common.base.Charsets;
+import com.google.common.base.Strings;
 import com.google.common.hash.Hashing;
 import com.google.common.io.Files;
 import com.google.common.io.Resources;
@@ -51,12 +52,19 @@ public final class ElasticsearchClient {
   private final CloseableHttpClient client;
   private final String uri;
 
+  public ElasticsearchClient(ElasticsearchSettings settings) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException {
+    this.client = createHttpClient(settings);
+    this.uri = buildURI(settings);
+  }
+
   public ElasticsearchClient(Properties config) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException {
-    String username = config.getProperty("elasticsearch.user");
-    String password = config.getProperty("elasticsearch.password");
-    String protocol = config.getProperty("elasticsearch.protocol");
-    this.client = createHttpClient(username, password, protocol);
-    this.uri = buildURI(config);
+    this(new ElasticsearchSettings()
+        .setUsername(config.getProperty("elasticsearch.user"))
+        .setPassword(config.getProperty("elasticsearch.password"))
+        .setProtocol(config.getProperty("elasticsearch.protocol"))
+        .setHostName(config.getProperty("elasticsearch.host"))
+        .setPort(Integer.valueOf(config.getProperty("elasticsearch.port")))
+        .setIndexName(config.getProperty("elasticsearch.index")));
   }
 
   public JSONObject getLatestScript() throws IOException, ParseException {
@@ -244,16 +252,19 @@ public final class ElasticsearchClient {
     }
   }
 
-  public static String buildURI(Properties config) {
-    String esProtocol = config.getProperty("elasticsearch.protocol");
-    String esHost = config.getProperty("elasticsearch.host");
-    String esIndexName = config.getProperty("elasticsearch.index");
-    String esPort = config.getProperty("elasticsearch.port");
+  public static String buildURI(ElasticsearchSettings settings) {
+    String esProtocol = settings.getProtocol();
+    String esHost = settings.getHostName();
+    String esIndexName = settings.getIndexName();
+    int esPort = settings.getPort();
     return esProtocol + "://" + esHost + ":" + esPort + "/" + esIndexName;
   }
 
-  public static CloseableHttpClient createHttpClient(String username, String password, String protocol) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException {
+  public static CloseableHttpClient createHttpClient(ElasticsearchSettings settings) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException {
     HttpClientBuilder httpClientBuilder = HttpClients.custom();
+    String username = settings.getUsername();
+    String password = settings.getPassword();
+    String protocol = settings.getProtocol();
     if ("https".equals(protocol)) {
       SSLContextBuilder builder = new SSLContextBuilder();
       builder.loadTrustMaterial(null, new TrustStrategy() {
@@ -265,9 +276,11 @@ public final class ElasticsearchClient {
       SSLConnectionSocketFactory sslsf = new SSLConnectionSocketFactory(builder.build());
       httpClientBuilder.setSSLSocketFactory(sslsf);
     }
-    CredentialsProvider credsProvider = new BasicCredentialsProvider();
-    credsProvider.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials(username, password));
-    httpClientBuilder.setDefaultCredentialsProvider(credsProvider);
+    if (!Strings.isNullOrEmpty(username) && !Strings.isNullOrEmpty(password)) {
+      CredentialsProvider credsProvider = new BasicCredentialsProvider();
+      credsProvider.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials(username, password));
+      httpClientBuilder.setDefaultCredentialsProvider(credsProvider);
+    }
     return httpClientBuilder.build();
   }
 

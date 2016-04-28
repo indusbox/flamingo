@@ -6,9 +6,9 @@ import java.util.Properties;
 
 import com.google.common.base.Strings;
 
-public final class Configuration {
+public final class ConfigurationLoader {
 
-  private Configuration() {
+  private ConfigurationLoader() {
   }
 
   public static Properties load() throws IOException {
