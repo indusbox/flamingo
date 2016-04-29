@@ -9,12 +9,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Properties;
 
-import org.indusbox.flamingo.elasticsearch.ElasticsearchClient;
-import org.indusbox.flamingo.elasticsearch.ElasticsearchSettings;
-import org.json.simple.JSONArray;
-import org.json.simple.JSONObject;
-import org.json.simple.parser.ParseException;
-
 import com.google.common.base.Optional;
 import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
@@ -23,93 +17,90 @@ import com.google.common.io.Files;
 
 public class Migration {
 
-  public static void main(String[] args) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException, IOException, ParseException {
+  public static void main(String[] args) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException, IOException {
     Properties config = ConfigurationLoader.load();
-    MigrationSettings migrationSettings = MigrationSettings.fromConfig(config);
-    migrate(migrationSettings);
+    FlamingoSettings settings = FlamingoSettings.fromConfig(config);
+    migrate(settings);
   }
 
-  public static void migrate(MigrationSettings migrationSettings) throws IOException, NoSuchAlgorithmException, KeyStoreException, KeyManagementException, ParseException {
-    ElasticsearchSettings elasticsearchSettings = migrationSettings.getElasticsearchSettings();
-    ElasticsearchClient esClient = new ElasticsearchClient(elasticsearchSettings);
-    String esIndexName = elasticsearchSettings.getIndexName();
-    String esTypeName = migrationSettings.getTypeName();
-    List<File> scripts = ScriptFile.getScripts(migrationSettings.getScriptsDir());
+  public static int migrate(FlamingoSettings settings) throws IOException, NoSuchAlgorithmException, KeyStoreException, KeyManagementException {
+    ScriptManager scriptManager = new ScriptManager(settings);
+    List<File> scripts = ScriptFile.getScripts(settings.getScriptsDir());
     if (scripts.isEmpty()) {
       System.out.println("No script, no migration");
       System.exit(0);
+      return 0;
     } else {
-      if (!esClient.indexExists()) {
+      if (!scriptManager.indexFlamingoExists()) {
         System.out.println("Index doesn't exist, creating index");
-        if (!esClient.createIndex()) {
-          throw new RuntimeException("Error while creating index " + esIndexName);
+        if (!scriptManager.createFlamingoIndex()) {
+          throw new RuntimeException("Error while creating index " + settings.getIndexName());
         }
       }
-      if (!esClient.typeExists()) {
-        if (!esClient.createType()) {
-          throw new RuntimeException("Error while creating type " + esTypeName + " in index " + esIndexName);
-        }
-      }
-
-      JSONObject latestSuccessfulScript = esClient.getLatestSuccessfulScript();
-      System.out.println("latestSuccessfulScript " + latestSuccessfulScript);
-      Long count = esClient.count();
+      Long count = scriptManager.count();
       if (count == 0) {
         // No script were executed, starting migration from the beginning
         for (File script : scripts) {
-          esClient.executeScript(script);
+          scriptManager.executeScript(script);
         }
-      } else {
-        JSONArray scriptObjects = esClient.list(count);
-        // Check consistency (exists + checksum)
-        for (Object scriptObject : scriptObjects) {
-          JSONObject scriptJson = (JSONObject) scriptObject;
-          final String fileName = (String) ((JSONObject) scriptJson.get("_source")).get("fileName");
-          final String checksum = (String) ((JSONObject) scriptJson.get("_source")).get("checksum");
-          Optional<File> scriptFound = Iterables.tryFind(scripts, new Predicate<File>() {
-            @Override
-            public boolean apply(File input) {
-              return fileName.equals(input.getName());
-            }
-          });
-          if (scriptFound.isPresent()) {
-            String currentChecksum = Files.hash(scriptFound.get(), Hashing.md5()).toString();
-            if (!Objects.equals(checksum, currentChecksum)) {
-              throw new IllegalStateException("Abort migration. Checksum is different for script " + fileName + "!");
-            }
-          } else {
-            throw new IllegalStateException("Abort migration. Script " + fileName + " doesn't exist anymore!");
+        return scripts.size();
+      }
+      // No more than one fail script
+      List<ScriptMetadata> failScripts = scriptManager.getFailScripts();
+      if (failScripts.size() > 1) {
+        throw new IllegalStateException("Abort migration. More than one failed script!");
+      }
+      // Check consistency (exists + checksum)
+      List<ScriptMetadata> scriptsMetadata = scriptManager.list(count);
+      for (ScriptMetadata scriptMetadata : scriptsMetadata) {
+        final String fileName = scriptMetadata.getFileName();
+        final String checksum = scriptMetadata.getChecksum();
+        Optional<File> scriptFound = Iterables.tryFind(scripts, new Predicate<File>() {
+          @Override
+          public boolean apply(File input) {
+            return fileName.equals(input.getName());
           }
-        }
-        // No more than one fail script
-        JSONArray failScripts = esClient.getFailScripts();
-        if (failScripts.size() > 1) {
-          throw new IllegalStateException("Abort migration. More than one failed script!");
-        }
-        if (!failScripts.isEmpty()) {
-          JSONObject failScriptJson = (JSONObject) failScripts.get(0);
-          JSONObject latestScript = esClient.getLatestScript();
-          String id = (String) failScriptJson.get("_id");
-          if (!Objects.equals(id, latestScript.get("_id"))) {
-            throw new IllegalArgumentException("Abort migration. Fail script must be the latest script!");
+        });
+        if (scriptFound.isPresent()) {
+          String currentChecksum = Files.hash(scriptFound.get(), Hashing.md5()).toString();
+          if (!Objects.equals(checksum, currentChecksum)) {
+            throw new IllegalStateException("Abort migration. Checksum is different for script " + fileName + "!");
           }
-          final String fileName = (String) ((JSONObject) failScriptJson.get("_source")).get("fileName");
-          // Retry failed script
-          System.out.println("Retrying failed script " + fileName);
-          File script = Iterables.find(scripts, new Predicate<File>() {
-            @Override
-            public boolean apply(File input) {
-              return fileName.equals(input.getName());
-            }
-          });
-          esClient.updateScript(script, id);
-        }
-        for (File script : scripts) {
-          if (esClient.searchScript(script.getName()) == null) {
-            esClient.executeScript(script);
-          }
+          scripts.remove(scriptFound.get());
+        } else {
+          throw new IllegalStateException("Abort migration. Script " + fileName + " doesn't exist anymore!");
         }
       }
+      if (!failScripts.isEmpty()) {
+        ScriptMetadata failScript = failScripts.get(0);
+        ScriptMetadata latestScript = scriptManager.getLatestScript();
+        String id = failScript.getId();
+        if (!Objects.equals(id, latestScript.getId())) {
+          throw new IllegalArgumentException("Abort migration. Fail script must be the latest script!");
+        }
+        final String fileName = failScript.getFileName();
+        // Retry failed script
+        System.out.println("Retrying failed script " + fileName);
+        File script = Iterables.find(scripts, new Predicate<File>() {
+          @Override
+          public boolean apply(File input) {
+            return fileName.equals(input.getName());
+          }
+        });
+        scriptManager.updateScript(script, id);
+      }
+      if (scripts.isEmpty()) {
+        System.out.println("No new script to apply");
+        return 0;
+      }
+      int result = 0;
+      for (File script : scripts) {
+        if (!scriptManager.scriptExists(script.getName())) {
+          scriptManager.executeScript(script);
+          result++;
+        }
+      }
+      return result;
     }
   }
 }

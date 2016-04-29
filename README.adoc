@@ -1,0 +1,2 @@
+= Flamingo
+Elasticsearch data migrations made easy.

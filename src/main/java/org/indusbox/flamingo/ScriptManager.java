@@ -1,4 +1,4 @@
-package org.indusbox.flamingo.elasticsearch;
+package org.indusbox.flamingo;
 
 import java.io.File;
 import java.io.IOException;
@@ -9,7 +9,8 @@ import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
-import java.util.Properties;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
@@ -41,59 +42,51 @@ import com.google.common.hash.Hashing;
 import com.google.common.io.Files;
 import com.google.common.io.Resources;
 
-public final class ElasticsearchClient {
+public final class ScriptManager {
 
-  private static final String MIGRATION_METADATA_MAPPING_FILE = "migration-metadata-mapping.json";
+  private static final String FLAMINGO_INDEX_FILE = "flamingo-index.json";
   private static final String LATEST_SCRIPT_QUERY_FILE = "latest-script-query.json";
   private static final String LATEST_SUCCESSFUL_SCRIPT_QUERY_FILE = "latest-successful-script-query.json";
   private static final String LIST_FAIL_SCRIPT_QUERY_FILE = "list-fail-script-query.json";
 
-  private String typeName = "migration-metadata";
   private final CloseableHttpClient client;
   private final String uri;
+  private final String flamingoIndexName;
+  private final String flamingoTypeName = "migration-metadata";
 
-  public ElasticsearchClient(ElasticsearchSettings settings) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException {
+  public ScriptManager(FlamingoSettings settings) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException {
     this.client = createHttpClient(settings);
     this.uri = buildURI(settings);
+    this.flamingoIndexName = settings.getIndexName();
   }
 
-  public ElasticsearchClient(Properties config) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException {
-    this(new ElasticsearchSettings()
-        .setUsername(config.getProperty("elasticsearch.user"))
-        .setPassword(config.getProperty("elasticsearch.password"))
-        .setProtocol(config.getProperty("elasticsearch.protocol"))
-        .setHostName(config.getProperty("elasticsearch.host"))
-        .setPort(Integer.valueOf(config.getProperty("elasticsearch.port")))
-        .setIndexName(config.getProperty("elasticsearch.index")));
-  }
-
-  public JSONObject getLatestScript() throws IOException, ParseException {
+  public ScriptMetadata getLatestScript() throws IOException {
     HttpPost request = createSearchRequest(LATEST_SCRIPT_QUERY_FILE);
     try (CloseableHttpResponse execute = this.client.execute(request)) {
       int statusCode = execute.getStatusLine().getStatusCode();
       System.out.println("getLatestScript, statusCode: " + statusCode);
       if (statusCode == 200) {
         String responseContent = EntityUtils.toString(execute.getEntity());
-        return getFirstHit(responseContent);
+        return ScriptMetadata.fromJSON(getFirstHit(responseContent));
       }
       throw new RuntimeException("Unable to get the latest executed script");
     }
   }
 
-  public JSONObject getLatestSuccessfulScript() throws IOException, ParseException {
+  public ScriptMetadata getLatestSuccessfulScript() throws IOException {
     HttpPost request = createSearchRequest(LATEST_SUCCESSFUL_SCRIPT_QUERY_FILE);
     try (CloseableHttpResponse execute = this.client.execute(request)) {
       int statusCode = execute.getStatusLine().getStatusCode();
       System.out.println("getLatestSuccessfulScript, statusCode: " + statusCode);
       if (statusCode == 200) {
         String responseContent = EntityUtils.toString(execute.getEntity());
-        return getFirstHit(responseContent);
+        return ScriptMetadata.fromJSON(getFirstHit(responseContent));
       }
       throw new RuntimeException("Unable to get the latest successful script");
     }
   }
 
-  public JSONArray getFailScripts() throws IOException, ParseException {
+  public List<ScriptMetadata> getFailScripts() throws IOException {
     HttpPost request = createSearchRequest(LIST_FAIL_SCRIPT_QUERY_FILE);
     try (CloseableHttpResponse execute = this.client.execute(request)) {
       int statusCode = execute.getStatusLine().getStatusCode();
@@ -101,44 +94,42 @@ public final class ElasticsearchClient {
       if (statusCode == 200) {
         JSONParser jsonParser = new JSONParser();
         JSONObject responseJson = (JSONObject) jsonParser.parse(EntityUtils.toString(execute.getEntity()));
-        return (JSONArray) ((JSONObject) responseJson.get("hits")).get("hits");
+        List<ScriptMetadata> result = new ArrayList<>();
+        JSONArray hits = (JSONArray) ((JSONObject) responseJson.get("hits")).get("hits");
+        for (Object hit : hits) {
+          JSONObject hitJSON = (JSONObject) hit;
+          result.add(ScriptMetadata.fromJSON(hitJSON));
+        }
+        return result;
       }
       throw new RuntimeException("Unable to list fail scripts");
+    } catch (ParseException e) {
+      throw new RuntimeException("Unable to parse result", e);
     }
   }
 
-  public boolean createIndex() throws IOException {
-    try (CloseableHttpResponse execute = this.client.execute(new HttpPut(this.uri))) {
-      int statusCode = execute.getStatusLine().getStatusCode();
-      System.out.println("createIndex, statusCode: " + statusCode);
-      return statusCode == 200;
-    }
-  }
-
-  public boolean createType() throws IOException {
-    HttpPut request = new HttpPut(this.uri + "/" + typeName + "/_mapping");
-    URL url = Resources.getResource(MIGRATION_METADATA_MAPPING_FILE);
+  public boolean createFlamingoIndex() throws IOException {
+    HttpPut request = new HttpPut(this.uri + "/" + this.flamingoIndexName);
+    URL url = Resources.getResource(FLAMINGO_INDEX_FILE);
     String mapping = Resources.toString(url, Charsets.UTF_8);
     StringEntity input = new StringEntity(mapping);
     input.setContentType("application/json");
     request.setEntity(input);
-    try (CloseableHttpResponse execute = this.client.execute(request)) {
-      int statusCode = execute.getStatusLine().getStatusCode();
-      System.out.println("createType, statusCode: " + statusCode);
-      return statusCode == 200;
+    try (CloseableHttpResponse response = this.client.execute(request)) {
+      int statusCode = response.getStatusLine().getStatusCode();
+      System.out.println("createIndex, statusCode: " + statusCode);
+      // Wait index creation, cluster status must be at least yellow
+      HttpGet healthRequest = new HttpGet(this.uri + "/_cluster/health?wait_for_status=yellow");
+      try (CloseableHttpResponse healthResponse = this.client.execute(healthRequest)) {
+        int healthStatusCode = healthResponse.getStatusLine().getStatusCode();
+        System.out.println("clusterHealth, statusCode: " + statusCode);
+        return healthStatusCode == 200;
+      }
     }
   }
 
-  public boolean typeExists() throws IOException {
-    try (CloseableHttpResponse execute = this.client.execute(new HttpHead(this.uri + "/" + this.typeName))) {
-      int statusCode = execute.getStatusLine().getStatusCode();
-      System.out.println("typeExists, statusCode: " + statusCode);
-      return statusCode == 200;
-    }
-  }
-
-  public boolean indexExists() throws IOException {
-    try (CloseableHttpResponse execute = this.client.execute(new HttpHead(this.uri))) {
+  public boolean indexFlamingoExists() throws IOException {
+    try (CloseableHttpResponse execute = this.client.execute(new HttpHead(this.uri + "/" + this.flamingoIndexName))) {
       int statusCode = execute.getStatusLine().getStatusCode();
       System.out.println("indexExists, statusCode: " + statusCode);
       return statusCode == 200;
@@ -165,16 +156,6 @@ public final class ElasticsearchClient {
     }
   }
 
-  @SuppressWarnings("unchecked")
-  private JSONObject createScriptJson(File script, boolean succeeded) throws IOException {
-    JSONObject jsonObject = new JSONObject();
-    jsonObject.put("checksum", Files.hash(script, Hashing.md5()).toString());
-    jsonObject.put("fileName", script.getName());
-    jsonObject.put("executedDate", DateTime.now().toString(ISODateTimeFormat.dateHourMinuteSecondMillis()));
-    jsonObject.put("succeeded", succeeded);
-    return jsonObject;
-  }
-
   public boolean executeBulk(File scriptFile) throws IOException {
     HttpPost bulkRequest = createBulkRequest(scriptFile);
     try (CloseableHttpResponse execute = this.client.execute(bulkRequest)) {
@@ -187,7 +168,7 @@ public final class ElasticsearchClient {
   }
 
   public boolean indexScript(JSONObject scriptJson) throws IOException {
-    HttpPost request = new HttpPost(this.uri + "/" + this.typeName);
+    HttpPost request = new HttpPost(this.uri + "/" + this.flamingoIndexName + "/" + this.flamingoTypeName + "?refresh=true");
     StringEntity entity = new StringEntity(scriptJson.toJSONString());
     entity.setContentType("application/json");
     request.setEntity(entity);
@@ -200,8 +181,49 @@ public final class ElasticsearchClient {
     }
   }
 
-  public boolean updateScript(JSONObject scriptJson, String id) throws IOException {
-    HttpPut request = new HttpPut(this.uri + "/" + this.typeName + "/" + id);
+  public Long count() throws IOException {
+    try (CloseableHttpResponse execute = this.client.execute(new HttpGet(this.uri + "/" + this.flamingoIndexName + "/" + this.flamingoTypeName + "/_search?size=0"))) {
+      int statusCode = execute.getStatusLine().getStatusCode();
+      System.out.println("count, statusCode: " + statusCode);
+      if (statusCode == 200) {
+        JSONParser jsonParser = new JSONParser();
+        JSONObject responseJson = (JSONObject) jsonParser.parse(EntityUtils.toString(execute.getEntity()));
+        return (Long) ((JSONObject) responseJson.get("hits")).get("total");
+      }
+      System.out.println("count, response: " + EntityUtils.toString(execute.getEntity()));
+      throw new RuntimeException("Unable to count executed scripts");
+    } catch (ParseException e) {
+      throw new RuntimeException("Unable to parse result", e);
+    }
+  }
+
+  public List<ScriptMetadata> list(Long size) throws IOException {
+    try (CloseableHttpResponse execute = this.client.execute(new HttpGet(this.uri + "/" + this.flamingoIndexName + "/" + this.flamingoTypeName + "/_search?size=" + size))) {
+      int statusCode = execute.getStatusLine().getStatusCode();
+      System.out.println("count, statusCode: " + statusCode);
+      if (statusCode == 200) {
+        JSONParser jsonParser = new JSONParser();
+        JSONObject responseJson = (JSONObject) jsonParser.parse(EntityUtils.toString(execute.getEntity()));
+        JSONArray hits = (JSONArray) ((JSONObject) responseJson.get("hits")).get("hits");
+        List<ScriptMetadata> result = new ArrayList<>();
+        for (Object hit : hits) {
+          JSONObject hitJSON = (JSONObject) hit;
+          result.add(ScriptMetadata.fromJSON(hitJSON));
+        }
+        return result;
+      }
+      throw new RuntimeException("Unable to count executed scripts");
+    } catch (ParseException e) {
+      throw new RuntimeException("Unable to parse result", e);
+    }
+  }
+
+  public boolean scriptExists(String fileName) throws IOException {
+    return searchScript(fileName) != null;
+  }
+
+  private boolean updateScript(JSONObject scriptJson, String id) throws IOException {
+    HttpPut request = new HttpPut(this.uri + "/" + this.flamingoIndexName + "/" + this.flamingoTypeName + "/" + id + "?refresh=true");
     StringEntity entity = new StringEntity(scriptJson.toJSONString());
     entity.setContentType("application/json");
     request.setEntity(entity);
@@ -214,34 +236,8 @@ public final class ElasticsearchClient {
     }
   }
 
-  public Long count() throws IOException, ParseException {
-    try (CloseableHttpResponse execute = this.client.execute(new HttpGet(this.uri + "/" + this.typeName + "/_count"))) {
-      int statusCode = execute.getStatusLine().getStatusCode();
-      System.out.println("count, statusCode: " + statusCode);
-      if (statusCode == 200) {
-        JSONParser jsonParser = new JSONParser();
-        JSONObject responseJson = (JSONObject) jsonParser.parse(EntityUtils.toString(execute.getEntity()));
-        return (Long) responseJson.get("count");
-      }
-      throw new RuntimeException("Unable to count executed scripts");
-    }
-  }
-
-  public JSONArray list(Long size) throws IOException, ParseException {
-    try (CloseableHttpResponse execute = this.client.execute(new HttpGet(this.uri + "/" + this.typeName + "/_search?size=" + size))) {
-      int statusCode = execute.getStatusLine().getStatusCode();
-      System.out.println("count, statusCode: " + statusCode);
-      if (statusCode == 200) {
-        JSONParser jsonParser = new JSONParser();
-        JSONObject responseJson = (JSONObject) jsonParser.parse(EntityUtils.toString(execute.getEntity()));
-        return (JSONArray) ((JSONObject) responseJson.get("hits")).get("hits");
-      }
-      throw new RuntimeException("Unable to count executed scripts");
-    }
-  }
-
-  public JSONObject searchScript(String fileName) throws IOException, ParseException {
-    try (CloseableHttpResponse execute = this.client.execute(new HttpGet(this.uri + "/" + this.typeName + "/_search?q=fileName:" + fileName))) {
+  private JSONObject searchScript(String fileName) throws IOException {
+    try (CloseableHttpResponse execute = this.client.execute(new HttpGet(this.uri + "/" + this.flamingoIndexName + "/" + this.flamingoTypeName + "/_search?q=fileName:" + fileName))) {
       int statusCode = execute.getStatusLine().getStatusCode();
       System.out.println("searchScript, statusCode: " + statusCode);
       if (statusCode == 200) {
@@ -252,15 +248,14 @@ public final class ElasticsearchClient {
     }
   }
 
-  public static String buildURI(ElasticsearchSettings settings) {
+  private String buildURI(FlamingoSettings settings) {
     String esProtocol = settings.getProtocol();
     String esHost = settings.getHostName();
-    String esIndexName = settings.getIndexName();
     int esPort = settings.getPort();
-    return esProtocol + "://" + esHost + ":" + esPort + "/" + esIndexName;
+    return esProtocol + "://" + esHost + ":" + esPort;
   }
 
-  public static CloseableHttpClient createHttpClient(ElasticsearchSettings settings) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException {
+  private CloseableHttpClient createHttpClient(FlamingoSettings settings) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException {
     HttpClientBuilder httpClientBuilder = HttpClients.custom();
     String username = settings.getUsername();
     String password = settings.getPassword();
@@ -284,23 +279,37 @@ public final class ElasticsearchClient {
     return httpClientBuilder.build();
   }
 
-  private JSONObject getFirstHit(String responseContent) throws ParseException {
-    JSONParser jsonParser = new JSONParser();
-    JSONObject jsonObject = (JSONObject) jsonParser.parse(responseContent);
-    JSONArray hits = (JSONArray) ((JSONObject) jsonObject.get("hits")).get("hits");
-    if (hits.isEmpty()) {
-      return null;
+  @SuppressWarnings("unchecked")
+  private JSONObject createScriptJson(File script, boolean succeeded) throws IOException {
+    JSONObject jsonObject = new JSONObject();
+    jsonObject.put("checksum", Files.hash(script, Hashing.md5()).toString());
+    jsonObject.put("fileName", script.getName());
+    jsonObject.put("executedDate", DateTime.now().toString(ISODateTimeFormat.dateHourMinuteSecondMillis()));
+    jsonObject.put("succeeded", succeeded);
+    return jsonObject;
+  }
+
+  private JSONObject getFirstHit(String responseContent) {
+    try {
+      JSONParser jsonParser = new JSONParser();
+      JSONObject jsonObject = (JSONObject) jsonParser.parse(responseContent);
+      JSONArray hits = (JSONArray) ((JSONObject) jsonObject.get("hits")).get("hits");
+      if (hits.isEmpty()) {
+        return null;
+      }
+      return (JSONObject) hits.get(0);
+    } catch (ParseException e) {
+      throw new RuntimeException("Unable to parse result", e);
     }
-    return (JSONObject) hits.get(0);
   }
 
   private HttpPost createSearchRequest(String queryFile) throws IOException {
-    HttpPost request = new HttpPost(this.uri + "/" + this.typeName + "/_search");
+    HttpPost request = new HttpPost(this.uri + "/" + this.flamingoIndexName + "/" + this.flamingoTypeName + "/_search");
     return createRequestFormResource(queryFile, request);
   }
 
   private HttpPost createBulkRequest(File scriptFile) throws IOException {
-    HttpPost request = new HttpPost(this.uri + "/_bulk");
+    HttpPost request = new HttpPost(this.uri + "/_bulk?refresh=true");
     return createRequestFormFile(scriptFile, request);
   }
 
