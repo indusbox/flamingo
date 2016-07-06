@@ -1,4 +1,4 @@
-package org.indusbox.flamingo;
+package org.indusbox.flamingo.scripts;
 
 import java.io.File;
 import java.io.IOException;
@@ -29,6 +29,8 @@ import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.ssl.SSLContextBuilder;
 import org.apache.http.util.EntityUtils;
+import org.indusbox.flamingo.settings.FlamingoSettings;
+import org.indusbox.flamingo.utils.StringUtils;
 import org.joda.time.DateTime;
 import org.joda.time.format.ISODateTimeFormat;
 import org.json.simple.JSONArray;
@@ -136,20 +138,20 @@ public final class ScriptManager {
     }
   }
 
-  public void executeScript(File script) throws IOException {
+  public void executeScript(File script, File baseDir) throws IOException {
     System.out.println("Executing script " + script.getName());
     boolean succeeded = executeBulk(script);
-    JSONObject scriptJson = createScriptJson(script, succeeded);
+    JSONObject scriptJson = createScriptJson(script, baseDir, succeeded);
     indexScript(scriptJson);
     if (!succeeded) {
       throw new RuntimeException("Abort migration. Error while executing " + script.getName());
     }
   }
 
-  public void updateScript(File script, String id) throws IOException {
+  public void updateScript(File script, File baseDir, String id) throws IOException {
     System.out.println("Updating script " + script.getName());
     boolean succeeded = executeBulk(script);
-    JSONObject jsonObject = createScriptJson(script, succeeded);
+    JSONObject jsonObject = createScriptJson(script, baseDir, succeeded);
     updateScript(jsonObject, id);
     if (!succeeded) {
       throw new RuntimeException("Abort migration. Error while updating " + script.getName());
@@ -198,7 +200,7 @@ public final class ScriptManager {
   }
 
   public List<ScriptMetadata> list(Long size) throws IOException {
-    try (CloseableHttpResponse execute = this.client.execute(new HttpGet(this.uri + "/" + this.flamingoIndexName + "/" + this.flamingoTypeName + "/_search?size=" + size))) {
+    try (CloseableHttpResponse execute = this.client.execute(new HttpGet(this.uri + "/" + this.flamingoIndexName + "/" + this.flamingoTypeName + "/_search?size=" + size + "&sort=fileName:asc"))) {
       int statusCode = execute.getStatusLine().getStatusCode();
       System.out.println("count, statusCode: " + statusCode);
       if (statusCode == 200) {
@@ -280,10 +282,11 @@ public final class ScriptManager {
   }
 
   @SuppressWarnings("unchecked")
-  private JSONObject createScriptJson(File script, boolean succeeded) throws IOException {
+  private JSONObject createScriptJson(File script, File baseDir, boolean succeeded) throws IOException {
     JSONObject jsonObject = new JSONObject();
     jsonObject.put("checksum", Files.hash(script, Hashing.md5()).toString());
-    jsonObject.put("fileName", script.getName());
+    final String scriptName =  StringUtils.removeStart(script.getCanonicalPath(), baseDir.getCanonicalPath() + File.separator).replaceAll("\\\\", "/");
+    jsonObject.put("fileName", scriptName);
     jsonObject.put("executedDate", DateTime.now().toString(ISODateTimeFormat.dateHourMinuteSecondMillis()));
     jsonObject.put("succeeded", succeeded);
     return jsonObject;

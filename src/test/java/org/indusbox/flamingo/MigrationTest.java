@@ -9,6 +9,7 @@ import java.net.URISyntaxException;
 import org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.common.transport.InetSocketTransportAddress;
+import org.indusbox.flamingo.settings.FlamingoSettings;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -80,7 +81,7 @@ public class MigrationTest {
     try {
       Migration.migrate(settings);
     } catch (IllegalStateException e) {
-      assertThat(e).hasMessageContaining("Checksum is different for script 1.json");
+      assertThat(e).hasMessageMatching(".*Checksum is different for script.*1\\.json!");
     }
   }
 
@@ -96,7 +97,7 @@ public class MigrationTest {
     try {
       Migration.migrate(settings);
     } catch (IllegalStateException e) {
-      assertThat(e).hasMessageContaining("Script 1.json doesn't exist anymore");
+      assertThat(e).hasMessageContaining("1.json doesn't exist anymore");
     }
   }
 
@@ -112,6 +113,21 @@ public class MigrationTest {
       Migration.migrate(settings);
     } catch (RuntimeException e) {
       assertThat(e).hasMessageContaining("Error while executing 1.json");
+    }
+  }
+
+  @Test
+  public void should_throw_an_exception_if_a_new_migration_script_is_before_last_executed() throws Exception {
+    // one script : n° 2
+    FlamingoSettings settings = createFlamingoSettings("library_5");
+    Migration.migrate(settings);
+
+    // 2 scripts : n°1 and 2 => should raise an exception
+    settings = createFlamingoSettings("library_4");
+    try {
+      Migration.migrate(settings);
+    } catch (RuntimeException e) {
+      assertThat(e).hasMessageContaining("A new script has been inserted before last successfully executed script");
     }
   }
 
