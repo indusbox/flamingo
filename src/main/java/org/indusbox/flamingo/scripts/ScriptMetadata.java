@@ -1,7 +1,6 @@
-package org.indusbox.flamingo;
+package org.indusbox.flamingo.scripts;
 
 import org.joda.time.DateTime;
-import org.joda.time.format.DateTimeFormatter;
 import org.joda.time.format.ISODateTimeFormat;
 import org.json.simple.JSONObject;
 

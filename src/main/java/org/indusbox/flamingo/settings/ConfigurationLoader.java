@@ -1,4 +1,4 @@
-package org.indusbox.flamingo;
+package org.indusbox.flamingo.settings;
 
 import java.io.FileInputStream;
 import java.io.IOException;

@@ -1,4 +1,4 @@
-package org.indusbox.flamingo;
+package org.indusbox.flamingo.settings;
 
 import java.io.File;
 import java.util.Properties;

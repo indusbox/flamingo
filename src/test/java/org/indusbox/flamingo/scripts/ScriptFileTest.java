@@ -1,4 +1,4 @@
-package org.indusbox.flamingo;
+package org.indusbox.flamingo.scripts;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -19,7 +19,7 @@ public class ScriptFileTest {
       throw new RuntimeException("Unable to find scripts directory");
     }
     List<File> scripts = ScriptFile.getScripts(new File(resource.toURI()));
-    assertThat(scripts).extracting("name").containsExactly("1.json", "2.json", "10.json");
+    assertThat(scripts).extracting("name").containsExactly("1.json", "10.json", "2.json");
   }
 
   @Test
