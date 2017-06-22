@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.net.URISyntaxException;
 
 import org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse;
+import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.indusbox.flamingo.settings.FlamingoSettings;
@@ -129,6 +130,18 @@ public class MigrationTest {
     } catch (RuntimeException e) {
       assertThat(e).hasMessageContaining("A new script has been inserted before last successfully executed script");
     }
+  }
+
+  @Test
+  public void should_apply_migration_and_update_existing_document() throws Exception {
+    // 2 scripts : n°2 => should raise update document created in n°1
+    FlamingoSettings settings = createFlamingoSettings("library_6");
+    int scriptsApplied = Migration.migrate(settings);
+
+    assertThat(scriptsApplied).isEqualTo(2);
+    GetResponse book1 = client.prepareGet("library", "book", "1").get();
+    assertThat(book1.isExists()).isTrue();
+    assertThat(book1.getSource().get("title")).isEqualTo("In Search of Lost Time");
   }
 
   private FlamingoSettings createFlamingoSettings(String scriptDir) throws URISyntaxException {
